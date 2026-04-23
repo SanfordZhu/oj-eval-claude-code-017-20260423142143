@@ -21,6 +21,10 @@ struct Train {
 static unordered_map<string, User> users;
 static unordered_set<string> online;
 static unordered_map<string, Train> trains;
+struct Order { string trainID; string from; string to; string leaveS; string arriveS; int price; int num; string status; int timeIdx; string dateKey; int si; int ti; };
+static unordered_map<string, vector<Order>> ordersByUser; // username -> orders (oldest to newest)
+static int globalTimeIdx=0;
+static unordered_map<string, vector<int>> seatByTrainDate; // key: trainID#MM-DD -> remaining seats per segment
 static bool hasFirstUser=false;
 
 static vector<string> split(const string &s, char sep){
@@ -133,12 +137,99 @@ int main(){
         } else if(cmd=="delete_train"){
             string id; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-i") id=v; }
             if(trains.count(id)==0 || trains[id].released){ cout<<-1<<'\n'; } else { trains.erase(id); cout<<0<<'\n'; }
+        } else if(cmd=="query_ticket"){
+            string S,T,D,sortKey="time"; string token; getline(cin, token); stringstream ss(token); string k,v;
+            while(ss>>k>>v){ if(k=="-s") S=v; else if(k=="-t") T=v; else if(k=="-d") D=v; else if(k=="-p") sortKey=v; }
+            auto parse_md=[&](const string &md){ int mm=(md[0]-'0')*10+(md[1]-'0'); int dd=(md[3]-'0')*10+(md[4]-'0'); return pair<int,int>(mm,dd); };
+            auto [mm_d, dd_d]=parse_md(D);
+            auto month_len=[&](int m){ if(m==6) return 30; if(m==7) return 31; return 31; };
+            auto to_str=[&](int m,int d,int minutes){ int hr=minutes/60; int mi=minutes%60; char buf[16]; char bufmd[6]; snprintf(bufmd, sizeof(bufmd), "%02d-%02d", m, d); snprintf(buf, sizeof(buf), "%02d:%02d", hr, mi); string res=string(bufmd)+" "+string(buf); return res; };
+            auto advance_abs=[&](int m,int d,int base_minutes,int delta){ long long tot=base_minutes+delta; int day_add = (int)(tot/1440); int mins = (int)(tot%1440); if(mins<0){ mins+=1440; day_add--; }
+                int nm=m, nd=d+day_add; while(nd>month_len(nm)){ nd-=month_len(nm); nm++; } while(nd<=0){ nm--; nd+=month_len(nm); }
+                return tuple<int,int,int>(nm, nd, mins); };
+            struct Item{ string id; string from,to; string leaveS, arriveS; int price; int seat; int timeNeeded; int si; int ti; string dateKey; };
+            vector<Item> items;
+            for(auto &pr: trains){ auto &t=pr.second; if(!t.released) continue; // only released trains
+                int si=-1, ti=-1; for(int i=0;i<t.stationNum;i++){ if(t.stations[i]==S) si=i; if(t.stations[i]==T) ti=i; }
+                if(si==-1 || ti==-1 || si>=ti) continue;
+                // Find starting station departure date d0 so that station si departs on D
+                int departOff = (si==0? 0 : t.departOffset[si]);
+                int base = (t.startTime[0]-'0')*600 + (t.startTime[1]-'0')*60 + (t.startTime[3]-'0')*10 + (t.startTime[4]-'0');
+                // compute start date nm,nd so that leave at si on D: subtract floor((base+departOff)/1440) days
+                int shiftDays = (base + departOff)/1440; int nm=mm_d, nd=dd_d - shiftDays; while(nd<=0){ nm--; nd+=month_len(nm); }
+                // check sale range
+                auto [mm_s, dd_s]=parse_md(t.saleDate.first); auto [mm_e, dd_e]=parse_md(t.saleDate.second);
+                auto cmp_md=[&](int a_m,int a_d,int b_m,int b_d){ if(a_m!=b_m) return a_m<b_m?-1:1; if(a_d!=b_d) return a_d<b_d?-1: (a_d>b_d?1:0); return 0; };
+                if(cmp_md(nm,nd,mm_s,dd_s)<0 || cmp_md(nm,nd,mm_e,dd_e)>0) continue;
+                auto [lm,ld,lmin]=advance_abs(nm,nd,base, t.departOffset[si]);
+                auto [am,ad,amin]=advance_abs(nm,nd,base, t.arriveOffset[ti]);
+                int price = t.priceCum[ti] - t.priceCum[si];
+                // seat availability per segment for this train/date (start date nm,nd but we key by leave date at start)
+                char bufmd[6]; snprintf(bufmd, sizeof(bufmd), "%02d-%02d", nm, nd);
+                string key = t.id + string("#") + string(bufmd);
+                auto &vec = seatByTrainDate[key]; if(vec.empty()) vec.assign(t.stationNum-1, t.seatNum);
+                int seat = INT_MAX; for(int seg=si; seg<ti; ++seg) seat = min(seat, vec[seg]);
+                int timeNeeded = (ti==si?0: (t.arriveOffset[ti]-t.departOffset[si]));
+                items.push_back({t.id, S, T, to_str(lm,ld,lmin), to_str(am,ad,amin), price, seat, timeNeeded, si, ti, key});
+            }
+            // sort
+            if(sortKey=="cost") sort(items.begin(), items.end(), [](const Item&a, const Item&b){ if(a.price!=b.price) return a.price<b.price; return a.id<b.id; });
+            else sort(items.begin(), items.end(), [](const Item&a, const Item&b){ if(a.timeNeeded!=b.timeNeeded) return a.timeNeeded<b.timeNeeded; return a.id<b.id; });
+            cout<<items.size()<<'\n';
+            for(auto &it: items){ cout<<it.id<<' '<<it.from<<' '<<it.leaveS<<" -> "<<it.to<<' '<<it.arriveS<<' '<<it.price<<' '<<it.seat<<'\n'; }
+        } else if(cmd=="buy_ticket"){
+            string u,id,d,f,t; int n=0; string q="false"; string token; getline(cin, token); stringstream ss(token); string k,v;
+            while(ss>>k>>v){ if(k=="-u") u=v; else if(k=="-i") id=v; else if(k=="-d") d=v; else if(k=="-f") f=v; else if(k=="-t") t=v; else if(k=="-n") n=stoi_safe(v); else if(k=="-q") q=v; }
+            if(!online.count(u) || n<=0){ cout<<-1<<'\n'; continue; }
+            if(trains.count(id)==0 || !trains[id].released){ cout<<-1<<'\n'; continue; }
+            auto &tr=trains[id]; int si=-1, ti=-1; for(int i=0;i<tr.stationNum;i++){ if(tr.stations[i]==f) si=i; if(tr.stations[i]==t) ti=i; }
+            if(si==-1 || ti==-1 || si>=ti) { cout<<-1<<'\n'; continue; }
+            // compute start date key same as query_ticket
+            auto parse_md=[&](const string &md){ int mm=(md[0]-'0')*10+(md[1]-'0'); int dd=(md[3]-'0')*10+(md[4]-'0'); return pair<int,int>(mm,dd); };
+            auto [mm_d, dd_d]=parse_md(d);
+            auto month_len=[&](int m){ if(m==6) return 30; if(m==7) return 31; return 31; };
+            int base = (tr.startTime[0]-'0')*600 + (tr.startTime[1]-'0')*60 + (tr.startTime[3]-'0')*10 + (tr.startTime[4]-'0');
+            int departOff = (si==0?0:tr.departOffset[si]);
+            int shiftDays = (base + departOff)/1440; int nm=mm_d, nd=dd_d - shiftDays; while(nd<=0){ nm--; nd+=month_len(nm); }
+            char bufmd[6]; snprintf(bufmd, sizeof(bufmd), "%02d-%02d", nm, nd);
+            string key = id + string("#") + string(bufmd);
+            auto &vec = seatByTrainDate[key]; if(vec.empty()) vec.assign(tr.stationNum-1, tr.seatNum);
+            int seat = INT_MAX; for(int seg=si; seg<ti; ++seg) seat = min(seat, vec[seg]);
+            if(seat>=n){ for(int seg=si; seg<ti; ++seg) vec[seg]-=n; // deduct
+                // compute strings
+                auto to_str=[&](int m,int d,int minutes){ int hr=minutes/60; int mi=minutes%60; char bf[16]; char bmd[6]; snprintf(bmd, sizeof(bmd), "%02d-%02d", m, d); snprintf(bf, sizeof(bf), "%02d:%02d", hr, mi); return string(bmd)+" "+string(bf); };
+                auto advance_abs=[&](int m,int d,int base_minutes,int delta){ long long tot=base_minutes+delta; int day_add = (int)(tot/1440); int mins = (int)(tot%1440); if(mins<0){ mins+=1440; day_add--; }
+                    int nm2=m, nd2=d+day_add; while(nd2>month_len(nm2)){ nd2-=month_len(nm2); nm2++; } while(nd2<=0){ nm2--; nd2+=month_len(nm2); }
+                    return tuple<int,int,int>(nm2, nd2, mins); };
+                auto [lm,ld,lmin]=advance_abs(nm,nd,base, tr.departOffset[si]);
+                auto [am,ad,amin]=advance_abs(nm,nd,base, tr.arriveOffset[ti]);
+                int price = tr.priceCum[ti]-tr.priceCum[si];
+                ordersByUser[u].push_back({id,f,t,to_str(lm,ld,lmin),to_str(am,ad,amin),price,n,"success",globalTimeIdx++,string(bufmd),si,ti});
+                cout<<price*n<<'\n';
+            } else {
+                if(q=="true" && n<=tr.seatNum){ // enter queue (not implemented fully)
+                    cout<<"queue\n";
+                } else cout<<-1<<'\n';
+            }
+        } else if(cmd=="query_order"){
+            string u; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-u") u=v; }
+            if(!online.count(u)){ cout<<-1<<'\n'; continue; }
+            auto &vec = ordersByUser[u]; cout<<vec.size()<<'\n';
+            for(int i=(int)vec.size()-1;i>=0;--i){ auto &o=vec[i]; cout<<'['<<o.status<<"] "<<o.trainID<<' '<<o.from<<' '<<o.leaveS<<" -> "<<o.to<<' '<<o.arriveS<<' '<<o.price<<' '<<o.num<<'\n'; }
+        } else if(cmd=="refund_ticket"){
+            string u; int nth=1; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k){ if(k=="-u") { ss>>u; } else if(k=="-n") { ss>>v; nth=stoi_safe(v);} }
+            if(!online.count(u)){ cout<<-1<<'\n'; continue; }
+            auto &vec=ordersByUser[u]; if(nth<=0 || nth>(int)vec.size()){ cout<<-1<<'\n'; continue; }
+            int idx = (int)vec.size()-nth; auto &o=vec[idx]; if(o.status=="refunded"){ cout<<-1<<'\n'; continue; }
+            // restore seats
+            auto &tr=trains[o.trainID]; auto &seatVec = seatByTrainDate[o.trainID+string("#")+o.dateKey];
+            for(int seg=o.si; seg<o.ti; ++seg) seatVec[seg]+=o.num;
+            o.status="refunded"; cout<<0<<'\n';
         } else if(cmd=="clean"){
             users.clear(); online.clear(); trains.clear(); hasFirstUser=false; cout<<0<<'\n';
         } else if(cmd=="exit"){
             online.clear(); cout<<"bye\n"; break;
         } else {
-            // unsupported commands
             string rest; getline(cin, rest); cout<<-1<<'\n';
         }
     }
