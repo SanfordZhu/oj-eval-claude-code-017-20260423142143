@@ -131,7 +131,15 @@ int main(){
                         auto mdL=advance(m,day,base, t.departOffset[i]); int cm2=(mdL.first/100), cd2=(mdL.first%100); lea=to_str(cm2,cd2,mdL.second);
                     }
                 }
-                string seat = (i==t.stationNum-1?"x":to_string(t.seatNum));
+                string seat;
+                if(i==t.stationNum-1){ seat="x"; }
+                else{
+                    string key = t.id + string("#") + d;
+                    auto it = seatByTrainDate.find(key);
+                    int rem = t.seatNum;
+                    if(it!=seatByTrainDate.end() && (int)it->second.size()==t.stationNum-1) rem = it->second[i];
+                    seat = to_string(rem);
+                }
                 cout<<t.stations[i]<<' '<<arr<<" -> "<<lea<<' '<<t.priceCum[i]<<' '<<seat<<'\n';
             }
         } else if(cmd=="delete_train"){
