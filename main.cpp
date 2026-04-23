@@ -13,6 +13,9 @@ struct User {
 struct Train {
     string id; int stationNum; int seatNum; vector<string> stations; vector<int> prices; string startTime;
     vector<int> travelTimes; vector<int> stopoverTimes; pair<string,string> saleDate; char type; bool released=false;
+    vector<int> arriveOffset; // minutes from start to arrival at i (i>=1), i==0 unused
+    vector<int> departOffset; // minutes from start to departure at i
+    vector<int> priceCum;     // cum price to station i
 };
 
 static unordered_map<string, User> users;
@@ -69,7 +72,24 @@ int main(){
             if(trains.count(t.id)) { cout<<-1<<'\n'; continue; }
             t.stations=split(s,'|'); auto ps=split(p,'|'); for(auto &q:ps) t.prices.push_back(stoi_safe(q)); auto tt=split(times,'|'); for(auto &q:tt) t.travelTimes.push_back(stoi_safe(q));
             if(stop!="_"){ auto so=split(stop,'|'); for(auto &q:so) t.stopoverTimes.push_back(stoi_safe(q)); }
-            auto sd=split(sale,'|'); t.saleDate={sd[0], sd[1]}; t.released=false; trains[t.id]=move(t); cout<<0<<'\n';
+            auto sd=split(sale,'|'); t.saleDate={sd[0], sd[1]}; t.released=false;
+            // precompute offsets
+            t.arriveOffset.assign(t.stationNum, 0);
+            t.departOffset.assign(t.stationNum, 0);
+            t.priceCum.assign(t.stationNum, 0);
+            int cum=0; int cur=0; // start at station 0: departOffset[0]=0
+            t.departOffset[0]=0; t.priceCum[0]=0;
+            for(int i=1;i<t.stationNum;i++){
+                cur += t.travelTimes[i-1];
+                t.arriveOffset[i]=cur;
+                cum += (i-1<(int)t.prices.size()? t.prices[i-1]:0);
+                t.priceCum[i]=cum;
+                if(i<t.stationNum-1){
+                    cur += t.stopoverTimes[i-1];
+                    t.departOffset[i]=cur;
+                }
+            }
+            trains[t.id]=move(t); cout<<0<<'\n';
         } else if(cmd=="release_train"){
             string id; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-i") id=v; }
             if(trains.count(id)==0 || trains[id].released){ cout<<-1<<'\n'; } else { trains[id].released=true; cout<<0<<'\n'; }
@@ -95,23 +115,20 @@ int main(){
                 return pair<int,int>(nm*100+nd, mins); };
             int base = parse_hm(t.startTime);
             cout<<t.id<<' '<<t.type<<'\n';
-            int cum=0; int m=mm_d, day=dd_d; // departure at starting station on d
-            // arrival/leave times
-            int leave_prev = base; int cur_m=m, cur_d=day;
+            // compute departure date at station 0 such that station s leaves on d; here we assume s=0 (query_train)
+            int m=mm_d, day=dd_d; // leaving station 0 on date d at startTime
             for(int i=0;i<t.stationNum;i++){
-                string arr, lea; if(i==0){ arr="xx-xx xx:xx"; auto md=advance(m,day,base,0); int cm=(md.first/100), cd=(md.first%100); lea=to_str(cm,cd,md.second); }
+                string arr, lea;
+                if(i==0){ arr="xx-xx xx:xx"; auto md=advance(m,day,base, t.departOffset[0]); int cm=(md.first/100), cd=(md.first%100); lea=to_str(cm,cd,md.second); }
                 else{
-                    // arrival from previous leave + travel
-                    auto md=advance(cur_m,cur_d,leave_prev, t.travelTimes[i-1]); int cm=(md.first/100), cd=(md.first%100); arr=to_str(cm,cd,md.second);
+                    auto mdA=advance(m,day,base, t.arriveOffset[i]); int cm=(mdA.first/100), cd=(mdA.first%100); arr=to_str(cm,cd,mdA.second);
                     if(i==t.stationNum-1){ lea="xx-xx xx:xx"; }
                     else{
-                        // leave after stopover
-                        auto md2=advance(cm,cd,md.second, t.stopoverTimes[i-1]); cur_m=cm; cur_d=cd; leave_prev=get<2>(add_minutes(cur_m,cur_d,md.second + t.stopoverTimes[i-1])); lea=to_str(get<0>(add_minutes(cur_m,cur_d,leave_prev)), get<1>(add_minutes(cur_m,cur_d,leave_prev)), leave_prev);
+                        auto mdL=advance(m,day,base, t.departOffset[i]); int cm2=(mdL.first/100), cd2=(mdL.first%100); lea=to_str(cm2,cd2,mdL.second);
                     }
                 }
                 string seat = (i==t.stationNum-1?"x":to_string(t.seatNum));
-                cout<<t.stations[i]<<' '<<arr<<" -> "<<lea<<' '<<cum<<' '<<seat<<'\n';
-                if(i<(int)t.prices.size()) cum+=t.prices[i];
+                cout<<t.stations[i]<<' '<<arr<<" -> "<<lea<<' '<<t.priceCum[i]<<' '<<seat<<'\n';
             }
         } else if(cmd=="delete_train"){
             string id; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-i") id=v; }
