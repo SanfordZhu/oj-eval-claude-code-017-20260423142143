@@ -76,14 +76,42 @@ int main(){
         } else if(cmd=="query_train"){
             string id,d; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-i") id=v; else if(k=="-d") d=v; }
             if(trains.count(id)==0){ cout<<-1<<'\n'; continue; }
-            auto &t=trains[id]; cout<<t.id<<' '<<t.type<<'\n';
-            // Simplified schedule printing with cumulative price and seats (no real time calculation)
-            int cum=0; for(int i=0;i<t.stationNum;i++){
-                string arr = (i==0?"xx-xx xx:xx":d+" 00:00");
-                string lea = (i==t.stationNum-1?"xx-xx xx:xx":d+" 00:00");
+            auto &t=trains[id];
+            // check date in sale range
+            auto parse_md=[&](const string &md){ int mm=(md[0]-'0')*10+(md[1]-'0'); int dd=(md[3]-'0')*10+(md[4]-'0'); return pair<int,int>(mm,dd); };
+            auto [mm_d, dd_d]=parse_md(d);
+            auto [mm_s, dd_s]=parse_md(t.saleDate.first);
+            auto [mm_e, dd_e]=parse_md(t.saleDate.second);
+            auto cmp_md=[&](int a_m,int a_d,int b_m,int b_d){ if(a_m!=b_m) return a_m<b_m?-1:1; if(a_d!=b_d) return a_d<b_d?-1: (a_d>b_d?1:0); return 0; };
+            if(cmp_md(mm_d,dd_d,mm_s,dd_s)<0 || cmp_md(mm_d,dd_d,mm_e,dd_e)>0){ cout<<-1<<'\n'; continue; }
+            // time helpers
+            auto parse_hm=[&](const string &hm){ int hr=(hm[0]-'0')*10+(hm[1]-'0'); int mi=(hm[3]-'0')*10+(hm[4]-'0'); return hr*60+mi; };
+            auto month_len=[&](int m){ if(m==6) return 30; if(m==7) return 31; return 31; };
+            auto add_minutes=[&](int m,int d,int minutes){ int hr = minutes/60; int mi = minutes%60; return tuple<int,int,int>(m,d,hr*60+mi); };
+            auto to_str=[&](int m,int d,int minutes){ int hr=minutes/60; int mi=minutes%60; char buf[16]; char bufmd[6]; snprintf(bufmd, sizeof(bufmd), "%02d-%02d", m, d); snprintf(buf, sizeof(buf), "%02d:%02d", hr, mi); string res=string(bufmd)+" "+string(buf); return res; };
+            // advance date by delta minutes from start
+            auto advance=[&](int m,int d,int base_minutes,int delta){ long long tot=base_minutes+delta; int day_add = (int)(tot/1440); int mins = (int)(tot%1440); if(mins<0){ mins+=1440; day_add--; }
+                int nm=m, nd=d+day_add; while(nd>month_len(nm)){ nd-=month_len(nm); nm++; } while(nd<=0){ nm--; nd+=month_len(nm); }
+                return pair<int,int>(nm*100+nd, mins); };
+            int base = parse_hm(t.startTime);
+            cout<<t.id<<' '<<t.type<<'\n';
+            int cum=0; int m=mm_d, day=dd_d; // departure at starting station on d
+            // arrival/leave times
+            int leave_prev = base; int cur_m=m, cur_d=day;
+            for(int i=0;i<t.stationNum;i++){
+                string arr, lea; if(i==0){ arr="xx-xx xx:xx"; auto md=advance(m,day,base,0); int cm=(md.first/100), cd=(md.first%100); lea=to_str(cm,cd,md.second); }
+                else{
+                    // arrival from previous leave + travel
+                    auto md=advance(cur_m,cur_d,leave_prev, t.travelTimes[i-1]); int cm=(md.first/100), cd=(md.first%100); arr=to_str(cm,cd,md.second);
+                    if(i==t.stationNum-1){ lea="xx-xx xx:xx"; }
+                    else{
+                        // leave after stopover
+                        auto md2=advance(cm,cd,md.second, t.stopoverTimes[i-1]); cur_m=cm; cur_d=cd; leave_prev=get<2>(add_minutes(cur_m,cur_d,md.second + t.stopoverTimes[i-1])); lea=to_str(get<0>(add_minutes(cur_m,cur_d,leave_prev)), get<1>(add_minutes(cur_m,cur_d,leave_prev)), leave_prev);
+                    }
+                }
                 string seat = (i==t.stationNum-1?"x":to_string(t.seatNum));
                 cout<<t.stations[i]<<' '<<arr<<" -> "<<lea<<' '<<cum<<' '<<seat<<'\n';
-                if(i<t.prices.size()) cum+=t.prices[i];
+                if(i<(int)t.prices.size()) cum+=t.prices[i];
             }
         } else if(cmd=="delete_train"){
             string id; string token; getline(cin, token); stringstream ss(token); string k,v; while(ss>>k>>v){ if(k=="-i") id=v; }
